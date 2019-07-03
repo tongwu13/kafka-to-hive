@@ -1,5 +1,6 @@
 package com.aibee.bdp
 
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.types.{LongType, StringType, StructField, StructType}
@@ -42,28 +43,33 @@ object App extends App with Logging {
     val minMaps = mutable.HashMap[String, mutable.HashMap[String, Long]]()
     val maxMaps = mutable.HashMap[String, mutable.HashMap[String, Long]]()
     if (arg.lastOffsetPath.isDefined) {
-      val schema = StructType(List(
-        StructField("topic", StringType),
-        StructField("partition", StringType),
-        StructField("minOffset", LongType),
-        StructField("maxOffset", LongType),
-      ))
-      val df = spark.read.schema(schema).csv(arg.lastOffsetPath.apply())
-      df.collect.foreach(row => {
-        val topic = row.getString(0)
-        val partition = row.getString(1)
-        val minOffset = row.getLong(2)
-        val maxOffset = row.getLong(3)
-        if (arg.backfill.apply()) {
-          minMaps.getOrElseUpdate(topic, mutable.HashMap[String, Long]())(partition) = minOffset
-          maxMaps.getOrElseUpdate(topic, mutable.HashMap[String, Long]())(partition) = maxOffset
-          start = Json.toJson(minMaps).toString
-          end = Json.toJson(maxMaps).toString
-        } else {
-          maxMaps.getOrElseUpdate(topic, mutable.HashMap[String, Long]())(partition) = maxOffset + 1
-          start = Json.toJson(maxMaps).toString
-        }
-      })
+      val conf = spark.sparkContext.hadoopConfiguration
+      val fs = FileSystem.get(conf)
+      val path = arg.lastOffsetPath.apply()
+      if (fs.exists(new Path(path))) {
+        val schema = StructType(List(
+          StructField("topic", StringType),
+          StructField("partition", StringType),
+          StructField("minOffset", LongType),
+          StructField("maxOffset", LongType),
+        ))
+        val df = spark.read.schema(schema).csv(path)
+        df.collect.foreach(row => {
+          val topic = row.getString(0)
+          val partition = row.getString(1)
+          val minOffset = row.getLong(2)
+          val maxOffset = row.getLong(3)
+          if (arg.backfill.apply()) {
+            minMaps.getOrElseUpdate(topic, mutable.HashMap[String, Long]())(partition) = minOffset
+            maxMaps.getOrElseUpdate(topic, mutable.HashMap[String, Long]())(partition) = maxOffset + 1
+            start = Json.toJson(minMaps).toString
+            end = Json.toJson(maxMaps).toString
+          } else {
+            maxMaps.getOrElseUpdate(topic, mutable.HashMap[String, Long]())(partition) = maxOffset + 1
+            start = Json.toJson(maxMaps).toString
+          }
+        })
+      }
     }
     logInfo(f"consumer starting offsets: $start, ending offset: $end")
     (start, end)
@@ -84,14 +90,13 @@ object App extends App with Logging {
       implicit val metricReads: Reads[Metric] = Json.reads[Metric]
       val t = Json.parse(row)
       Json.fromJson(t) match {
-        case JsSuccess(m: Metric, _) => {
+        case JsSuccess(m: Metric, _) =>
           val mutableMap = mutable.Map(m.labels.toSeq: _*)
           if (mutableMap.contains("__name__")) {
             mutableMap.remove("__name__")
           }
           MetricWithDt(m.timestamp, m.value, m.name, mutableMap.toMap,
             m.timestamp.substring(0, 10).replace("-", ""))
-        }
         case _ => null
       }
     })
