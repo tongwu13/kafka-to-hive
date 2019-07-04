@@ -11,16 +11,11 @@ import scala.collection.mutable
 case class Metric(timestamp: String, value: String, name: String, labels: Map[String, String])
 case class MetricWithDt(timestamp: String, value: String, name: String, labels: Map[String, String], dt: String)
 
-/**
- * Hello world!
- *
- */
 object App extends App with Logging {
   val arg = new Argument(args)
   val spark = SparkSession
     .builder
     .appName(arg.appName.apply())
-    .master("local")
     .config("spark.sql.avro.compression.codec", "snappy")
 //    .config("spark.sql.hive.metastore.version", "2.1.1")
 //    .enableHiveSupport
@@ -51,7 +46,7 @@ object App extends App with Logging {
           StructField("topic", StringType),
           StructField("partition", StringType),
           StructField("minOffset", LongType),
-          StructField("maxOffset", LongType),
+          StructField("maxOffset", LongType)
         ))
         val df = spark.read.schema(schema).csv(path)
         df.collect.foreach(row => {
@@ -78,7 +73,7 @@ object App extends App with Logging {
   def writeEndingOffset(): Unit = {
     df.createTempView("metrics")
     val aggr = spark.sql("select topic, partition, min(offset) as min_offset, max(offset) as offset " +
-      "from metrics group by topic, partition").repartition(1)
+      "from metrics group by topic, partition")
     var filename = arg.offsetPath.apply
     filename = filename + (if (filename.endsWith("/")) "dt=" + arg.getDt else "/dt=" + arg.getDt)
     aggr.write.mode(SaveMode.Overwrite).csv(filename)
@@ -111,3 +106,5 @@ object App extends App with Logging {
       .save(dir)
   }
 }
+
+
